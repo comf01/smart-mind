@@ -30,6 +30,7 @@ def test_pipeline_preserves_shared_cognitive_context():
     assert thought.context.metadata["verification"]["approved"] is False
     assert "no_grounded_evidence" in thought.context.metadata["verification"]["issues"]
     assert [event["module"] for event in thought.context.trace] == [
+        "LongTermMemory",
         "PerceptionModule",
         "Planner",
         "Executor",
