@@ -9,6 +9,8 @@ import logging
 from typing import Any, Dict, List, Optional, Union
 from datetime import datetime
 
+from ..core.context import CognitiveContext
+
 
 class PerceptionModule:
     """
@@ -50,18 +52,12 @@ class PerceptionModule:
         self._input_buffer = []
         self.logger.info("Perception module deactivated")
     
-    async def process(self, input_data: Any) -> Dict[str, Any]:
-        """
-        Process incoming perceptual data.
-        
-        Args:
-            input_data: Raw input data
-            
-        Returns:
-            Structured perceptual output
-        """
+    async def process(self, context: CognitiveContext) -> CognitiveContext:
+        """Process incoming perceptual data without replacing shared state."""
         if not self._active:
-            return {"raw": input_data}
+            return context
+
+        input_data = context.current
         
         # Determine input type
         input_type = self._classify_input(input_data)
@@ -69,15 +65,19 @@ class PerceptionModule:
         # Apply attention filter
         if not self._should_attend(input_type):
             self.logger.debug(f"Ignoring input type: {input_type}")
-            return {"ignored": True, "type": input_type}
+            context.add_trace(self.__class__.__name__, "ignored", {"type": input_type})
+            return context
         
         # Process based on type
         processed = self._process_by_type(input_data, input_type)
+        context.observations.append(processed)
+        context.current = processed
+        context.add_trace(self.__class__.__name__, "perceived", {"type": input_type})
         
         self._processed_count += 1
         self.logger.debug(f"Processed {input_type} input")
         
-        return processed
+        return context
     
     def _classify_input(self, data: Any) -> str:
         """Classify the type of input."""

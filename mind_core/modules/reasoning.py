@@ -9,6 +9,8 @@ import logging
 from typing import Any, Dict, List, Optional
 from dataclasses import dataclass
 
+from ..core.context import CognitiveContext
+
 
 @dataclass
 class ReasoningStep:
@@ -59,19 +61,12 @@ class ReasoningEngine:
         self._current_chain = []
         self.logger.info("Reasoning engine deactivated")
     
-    async def process(self, query: str) -> str:
-        """
-        Process a query through reasoning.
-        
-        Args:
-            query: Input query to reason about
-            
-        Returns:
-            Reasoned response
-        """
+    async def process(self, context: CognitiveContext) -> CognitiveContext:
+        """Process the current cognitive state through reasoning."""
         if not self._active:
-            return query
-        
+            return context
+
+        query = self._extract_query(context.current)
         self.logger.debug(f"Reasoning about: {query[:50]}...")
         
         # Build reasoning chain
@@ -95,8 +90,27 @@ class ReasoningEngine:
         
         # Store completed chain
         self._reasoning_chains.append(self._current_chain.copy())
+
+        context.hypotheses.append(reasoned)
+        context.answer = response
+        context.current = response
+        confidence = float(reasoned.get("confidence", 0.0))
+        context.uncertainty = max(0.0, min(1.0, 1.0 - confidence))
+        context.add_trace(
+            self.__class__.__name__,
+            "reasoned",
+            {"steps": len(self._current_chain), "confidence": confidence},
+        )
         
-        return response
+        return context
+
+    def _extract_query(self, data: Any) -> str:
+        """Extract text from the current cognitive payload."""
+        if isinstance(data, dict):
+            content = data.get("content")
+            if isinstance(content, str):
+                return content
+        return str(data)
     
     def _parse_query(self, query: str) -> Dict[str, Any]:
         """Parse the input query."""

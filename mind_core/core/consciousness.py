@@ -9,6 +9,8 @@ import logging
 from typing import Dict, Any, List
 from datetime import datetime
 
+from .context import CognitiveContext
+
 
 class ConsciousnessModule:
     """
@@ -63,31 +65,26 @@ class ConsciousnessModule:
         self._awareness_level = 0.0
         self.logger.info("Consciousness module deactivated")
     
-    async def process(self, input_data: Any) -> Any:
-        """
-        Process input through consciousness lens.
-        
-        Args:
-            input_data: Data to process
-            
-        Returns:
-            Processed data with meta-cognitive annotations
-        """
+    async def process(self, context: CognitiveContext) -> CognitiveContext:
+        """Annotate and monitor the shared cognitive context."""
         if not self._active:
-            return input_data
+            return context
         
-        # Add self-awareness metadata
-        if isinstance(input_data, dict):
-            input_data["_consciousness"] = {
-                "awareness_level": self._awareness_level,
-                "timestamp": datetime.now(),
-                "self_model_version": "1.0",
-            }
+        context.metadata["metacognition"] = {
+            "awareness_level": self._awareness_level,
+            "timestamp": datetime.now().isoformat(),
+            "self_model_version": "1.0",
+        }
         
         # Monitor for uncertainty
-        self._check_uncertainty(input_data)
+        self._check_uncertainty(context)
+        context.add_trace(
+            self.__class__.__name__,
+            "monitored",
+            {"uncertainty": context.uncertainty},
+        )
         
-        return input_data
+        return context
     
     def introspect(self) -> Dict[str, Any]:
         """
@@ -152,19 +149,13 @@ class ConsciousnessModule:
             self._active_processes.remove(process_name)
             self.logger.debug(f"Process unregistered: {process_name}")
     
-    def _check_uncertainty(self, data: Any) -> None:
-        """
-        Check for signs of uncertainty in processed data.
-        
-        Args:
-            data: Data to analyze
-        """
+    def _check_uncertainty(self, context: CognitiveContext) -> None:
+        """Check explicit context uncertainty against the confidence threshold."""
         if not self._uncertainty_alerts:
             return
-        
-        # Simple uncertainty detection
-        if isinstance(data, dict) and data.get("confidence", 1.0) < self._confidence_threshold:
-            self.logger.warning(f"Low confidence detected: {data.get('confidence')}")
+        confidence = 1.0 - context.uncertainty
+        if confidence < self._confidence_threshold:
+            self.logger.warning(f"Low confidence detected: {confidence:.2f}")
             self.update_self_model("uncertainty_detection")
     
     def get_awareness_level(self) -> float:

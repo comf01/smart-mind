@@ -1,6 +1,13 @@
 """Core module initialization."""
 
-from .engine import MindCore
+from .context import CognitiveContext, CognitiveModule
+from .engine import MindCore, Thought
 from .consciousness import ConsciousnessModule
 
-__all__ = ["MindCore", "ConsciousnessModule"]
+__all__ = [
+    "CognitiveContext",
+    "CognitiveModule",
+    "MindCore",
+    "Thought",
+    "ConsciousnessModule",
+]

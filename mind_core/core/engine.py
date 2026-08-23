@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional
 from datetime import datetime
 from dataclasses import dataclass, field
 
+from .context import CognitiveContext
 from ..security.credentials import CredentialManager
 from ..memory.short_term import ShortTermMemory
 from ..memory.long_term import LongTermMemory
@@ -24,6 +25,7 @@ class Thought:
     timestamp: datetime = field(default_factory=datetime.now)
     confidence: float = 0.0
     metadata: Dict[str, Any] = field(default_factory=dict)
+    context: Optional[CognitiveContext] = None
     
     @property
     def response(self) -> str:
@@ -204,7 +206,7 @@ class MindCore:
             self._metrics["errors"] += 1
             return False
     
-    async def think(self, query: str, depth: int = 1) -> Thought:
+    async def think(self, query: Any, depth: int = 1) -> Thought:
         """
         Process a thought or query through active cognitive modules.
         
@@ -220,34 +222,51 @@ class MindCore:
         
         # Store in short-term memory
         self.short_term_memory.add(query, role="input")
+
+        # All modules share and enrich one stable cognitive contract.
+        context = CognitiveContext(
+            input=query,
+            current=query,
+            metadata={"depth": depth},
+        )
         
         # Process through active modules
-        result = query
         for module_name in self._active_modules:
             try:
                 module = self._modules[module_name]
                 if hasattr(module, 'process'):
-                    result = await module.process(result)
+                    processed = await module.process(context)
+                    if not isinstance(processed, CognitiveContext):
+                        raise TypeError(
+                            f"Module '{module_name}' violated the cognitive contract: "
+                            "process() must return CognitiveContext"
+                        )
+                    context = processed
             except Exception as e:
                 self.logger.warning(f"Module '{module_name}' failed: {e}")
                 self._metrics["errors"] += 1
+                context.add_trace(module_name, "error", {"error": str(e)})
+                raise
         
         # Create thought object
+        content = context.answer if context.answer is not None else str(context.current)
         thought = Thought(
-            content=result,
-            confidence=self._calculate_confidence(),
+            content=content,
+            confidence=self._calculate_confidence(context),
             metadata={
                 "depth": depth,
                 "modules_used": self._active_modules.copy(),
                 "processing_time": (datetime.now() - start_time).total_seconds(),
-            }
+                "trace_length": len(context.trace),
+            },
+            context=context,
         )
         
         # Store in memory
-        self.short_term_memory.add(result, role="output")
+        self.short_term_memory.add(content, role="output")
         self._metrics["thoughts_processed"] += 1
         
-        self.logger.debug(f"Thought processed: {query[:50]}...")
+        self.logger.debug(f"Thought processed: {str(query)[:50]}...")
         return thought
     
     def use_tool(self, tool_name: str, **kwargs) -> Any:
@@ -313,12 +332,9 @@ class MindCore:
             "consciousness_level": self._assess_consciousness(),
         }
     
-    def _calculate_confidence(self) -> float:
-        """Calculate confidence score for a thought."""
-        # Simplified implementation
-        base_confidence = 0.7
-        module_bonus = len(self._active_modules) * 0.05
-        return min(base_confidence + module_bonus, 1.0)
+    def _calculate_confidence(self, context: CognitiveContext) -> float:
+        """Calculate confidence from the context's explicit uncertainty."""
+        return max(0.0, min(1.0, 1.0 - context.uncertainty))
     
     def _assess_consciousness(self) -> str:
         """Assess current consciousness level."""

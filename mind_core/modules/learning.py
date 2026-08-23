@@ -9,6 +9,8 @@ import logging
 from typing import Any, Dict, List, Optional
 from datetime import datetime
 
+from ..core.context import CognitiveContext
+
 
 class LearningModule:
     """
@@ -52,26 +54,24 @@ class LearningModule:
         self._active = False
         self.logger.info("Learning module deactivated")
     
-    async def process(self, input_data: Any) -> Any:
-        """
-        Process input with learning perspective.
-        
-        Args:
-            input_data: Data to process
-            
-        Returns:
-            Processed data with learning insights
-        """
+    async def process(self, context: CognitiveContext) -> CognitiveContext:
+        """Record experience while preserving the shared cognitive context."""
         if not self._active:
-            return input_data
+            return context
         
-        # Learn from the input
-        self._record_experience(input_data)
+        # Learn from the current thought state
+        self._record_experience({
+            "input": context.input,
+            "answer": context.answer,
+            "uncertainty": context.uncertainty,
+            "trace_length": len(context.trace),
+        })
         
         # Look for patterns
         self._detect_patterns()
+        context.add_trace(self.__class__.__name__, "experience_recorded")
         
-        return input_data
+        return context
     
     def learn(self, experience: Dict[str, Any], outcome: float) -> None:
         """
