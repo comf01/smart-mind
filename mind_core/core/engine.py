@@ -15,6 +15,7 @@ from .context import CognitiveContext
 from ..security.credentials import CredentialManager
 from ..memory.short_term import ShortTermMemory
 from ..memory.long_term import LongTermMemory
+from ..memory.retrieval import LexicalMemoryRetriever
 
 
 @dataclass
@@ -69,6 +70,10 @@ class MindCore:
             limit=self.config.get("MEMORY_LIMIT", 10000)
         )
         self.long_term_memory = LongTermMemory()
+        self.memory_retriever = LexicalMemoryRetriever(
+            self.long_term_memory,
+            limit=1,
+        )
         
         # Module registry
         self._modules: Dict[str, Any] = {}
@@ -228,6 +233,19 @@ class MindCore:
             input=query,
             current=query,
             metadata={"depth": depth},
+        )
+
+        # Ground the thought cycle in the strongest matching long-term memory.
+        retrieved_memories = self.memory_retriever.retrieve(str(query))
+        context.memories.extend(retrieved_memories)
+        context.metadata["memory_retrieval"] = {
+            "count": len(retrieved_memories),
+            "keys": [item.get("key") for item in retrieved_memories],
+        }
+        context.add_trace(
+            "LongTermMemory",
+            "retrieved",
+            context.metadata["memory_retrieval"],
         )
         
         # Process through active modules
