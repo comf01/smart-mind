@@ -1,21 +1,18 @@
 """
-Reasoning Engine - Logical inference and problem-solving module.
-
-This module implements multi-step reasoning, chain-of-thought processing,
-and logical inference capabilities for the mind core.
+Reasoning Engine - Planned execution with explicit verification.
 """
 
 import logging
-from typing import Any, Dict, List, Optional
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
+from typing import Any, Dict, List, Optional, Tuple
 
 from ..core.context import CognitiveContext
 
 
 @dataclass
 class ReasoningStep:
-    """Represents a single step in a reasoning chain."""
-    
+    """Represents one executed operation in the reasoning loop."""
+
     step_number: int
     operation: str
     input_data: Any
@@ -23,163 +20,284 @@ class ReasoningStep:
     confidence: float
 
 
+@dataclass
+class PlanStep:
+    """Represents one planned operation and its execution state."""
+
+    step_number: int
+    operation: str
+    status: str = "pending"
+    output: Any = None
+
+
+@dataclass
+class VerificationResult:
+    """Result of verifying a candidate answer before adoption."""
+
+    approved: bool
+    confidence: float
+    issues: List[str]
+
+
+class Planner:
+    """Create the smallest explicit plan needed for one reasoning cycle."""
+
+    OPERATIONS = ("parse", "inspect_evidence", "synthesize")
+
+    def build(self, query: str, max_depth: int) -> List[PlanStep]:
+        depth = max(1, min(max_depth, len(self.OPERATIONS)))
+        return [
+            PlanStep(step_number=index, operation=operation)
+            for index, operation in enumerate(self.OPERATIONS[:depth], start=1)
+        ]
+
+
+class Executor:
+    """Execute a plan deterministically against the shared cognitive context."""
+
+    def execute(
+        self,
+        context: CognitiveContext,
+        query: str,
+        plan: List[PlanStep],
+    ) -> Tuple[Optional[str], float, Dict[str, Any], List[ReasoningStep]]:
+        parsed: Optional[Dict[str, Any]] = None
+        evidence: Dict[str, Any] = {"grounded_items": 0}
+        candidate: Optional[str] = None
+        confidence = 0.0
+        trace: List[ReasoningStep] = []
+
+        for step in plan:
+            input_data: Any
+
+            if step.operation == "parse":
+                input_data = query
+                output = {
+                    "type": "question",
+                    "content": query,
+                    "complexity": self._assess_complexity(query),
+                }
+                parsed = output
+                step_confidence = 0.95
+
+            elif step.operation == "inspect_evidence":
+                input_data = parsed or {"content": query}
+                grounded = list(context.memories) + list(context.tool_results)
+                output = {
+                    "observations": len(context.observations),
+                    "memories": len(context.memories),
+                    "tool_results": len(context.tool_results),
+                    "grounded_items": len(grounded),
+                    "latest_grounded_item": grounded[-1] if grounded else None,
+                }
+                evidence = output
+                step_confidence = 0.9
+
+            elif step.operation == "synthesize":
+                input_data = evidence
+                source = evidence.get("latest_grounded_item")
+                if evidence.get("grounded_items", 0) > 0:
+                    candidate = f"Grounded context for '{query}': {source}"
+                    confidence = 0.65
+                else:
+                    candidate = f"Insufficient grounded evidence to answer: {query}"
+                    confidence = 0.2
+                output = candidate
+                step_confidence = confidence
+
+            else:
+                input_data = None
+                output = None
+                step_confidence = 0.0
+
+            step.status = "completed"
+            step.output = output
+            trace.append(
+                ReasoningStep(
+                    step_number=step.step_number,
+                    operation=step.operation,
+                    input_data=input_data,
+                    output_data=output,
+                    confidence=step_confidence,
+                )
+            )
+
+        return candidate, confidence, evidence, trace
+
+    def _assess_complexity(self, query: str) -> str:
+        word_count = len(query.split())
+        if word_count < 5:
+            return "simple"
+        if word_count < 15:
+            return "moderate"
+        return "complex"
+
+
+class Verifier:
+    """Reject ungrounded or incomplete candidates before they become answers."""
+
+    REQUIRED_OPERATIONS = {"parse", "inspect_evidence", "synthesize"}
+
+    def verify(
+        self,
+        plan: List[PlanStep],
+        candidate: Optional[str],
+        confidence: float,
+        evidence: Dict[str, Any],
+    ) -> VerificationResult:
+        issues: List[str] = []
+
+        completed = {
+            step.operation
+            for step in plan
+            if step.status == "completed"
+        }
+        missing = self.REQUIRED_OPERATIONS - completed
+        if missing:
+            issues.append("incomplete_plan")
+
+        if not candidate:
+            issues.append("missing_candidate")
+
+        if evidence.get("grounded_items", 0) < 1:
+            issues.append("no_grounded_evidence")
+
+        approved = not issues
+        verified_confidence = confidence if approved else min(confidence, 0.2)
+
+        return VerificationResult(
+            approved=approved,
+            confidence=max(0.0, min(1.0, verified_confidence)),
+            issues=issues,
+        )
+
+
 class ReasoningEngine:
-    """
-    Implements logical reasoning and inference capabilities.
-    
-    Features:
-    - Chain-of-thought reasoning
-    - Multi-step inference
-    - Logical deduction and induction
-    - Confidence scoring
-    """
-    
+    """Coordinate planning, execution, and verification for one thought cycle."""
+
     def __init__(self, max_depth: int = 10):
-        """
-        Initialize the reasoning engine.
-        
-        Args:
-            max_depth: Maximum reasoning chain depth
-        """
         self.max_depth = max_depth
         self.logger = logging.getLogger("ReasoningEngine")
-        
+
         self._active = False
         self._reasoning_chains: List[List[ReasoningStep]] = []
         self._current_chain: List[ReasoningStep] = []
-        
-        self.logger.info(f"Reasoning engine initialized (max_depth={max_depth})")
-    
+
+        self.planner = Planner()
+        self.executor = Executor()
+        self.verifier = Verifier()
+
+        self.logger.info(
+            f"Reasoning engine initialized (max_depth={max_depth})"
+        )
+
     def activate(self) -> None:
-        """Activate the reasoning engine."""
         self._active = True
         self.logger.info("Reasoning engine activated")
-    
+
     def deactivate(self) -> None:
-        """Deactivate the reasoning engine."""
         self._active = False
         self._current_chain = []
         self.logger.info("Reasoning engine deactivated")
-    
+
     async def process(self, context: CognitiveContext) -> CognitiveContext:
-        """Process the current cognitive state through reasoning."""
+        """Plan, execute, and verify before adopting a candidate answer."""
         if not self._active:
             return context
 
         query = self._extract_query(context.current)
         self.logger.debug(f"Reasoning about: {query[:50]}...")
-        
-        # Build reasoning chain
-        self._current_chain = []
-        
-        # Step 1: Parse the query
-        parsed = self._parse_query(query)
-        self._add_step("parse", query, parsed, 0.9)
-        
-        # Step 2: Identify relevant knowledge
-        knowledge = self._identify_knowledge(parsed)
-        self._add_step("identify_knowledge", parsed, knowledge, 0.85)
-        
-        # Step 3: Apply reasoning
-        reasoned = self._apply_reasoning(knowledge)
-        self._add_step("reason", knowledge, reasoned, 0.8)
-        
-        # Step 4: Formulate response
-        response = self._formulate_response(reasoned)
-        self._add_step("formulate", reasoned, response, 0.9)
-        
-        # Store completed chain
-        self._reasoning_chains.append(self._current_chain.copy())
 
-        context.hypotheses.append(reasoned)
+        plan = self.planner.build(query, self.max_depth)
+        context.add_trace(
+            "Planner",
+            "planned",
+            {"operations": [step.operation for step in plan]},
+        )
+
+        candidate, confidence, evidence, trace = self.executor.execute(
+            context,
+            query,
+            plan,
+        )
+        self._current_chain = trace
+        self._reasoning_chains.append(trace.copy())
+        context.plan = [asdict(step) for step in plan]
+        context.add_trace(
+            "Executor",
+            "executed",
+            {
+                "completed_steps": len(trace),
+                "candidate_created": candidate is not None,
+            },
+        )
+
+        verification = self.verifier.verify(
+            plan,
+            candidate,
+            confidence,
+            evidence,
+        )
+        context.add_trace(
+            "Verifier",
+            "verified",
+            {
+                "approved": verification.approved,
+                "issues": list(verification.issues),
+                "confidence": verification.confidence,
+            },
+        )
+
+        if verification.approved:
+            response = candidate or "No verified answer available."
+        else:
+            response = candidate or "Reasoning plan incomplete; no verified answer available."
+
+        context.hypotheses.append(
+            {
+                "candidate": candidate,
+                "evidence": evidence,
+                "verified": verification.approved,
+                "issues": list(verification.issues),
+                "confidence": verification.confidence,
+            }
+        )
         context.answer = response
         context.current = response
-        confidence = float(reasoned.get("confidence", 0.0))
-        context.uncertainty = max(0.0, min(1.0, 1.0 - confidence))
+        context.uncertainty = 1.0 - verification.confidence
+        context.metadata["verification"] = {
+            "approved": verification.approved,
+            "issues": list(verification.issues),
+            "confidence": verification.confidence,
+        }
         context.add_trace(
             self.__class__.__name__,
-            "reasoned",
-            {"steps": len(self._current_chain), "confidence": confidence},
+            "completed",
+            {
+                "approved": verification.approved,
+                "plan_steps": len(plan),
+            },
         )
-        
+
         return context
 
     def _extract_query(self, data: Any) -> str:
-        """Extract text from the current cognitive payload."""
         if isinstance(data, dict):
             content = data.get("content")
             if isinstance(content, str):
                 return content
         return str(data)
-    
-    def _parse_query(self, query: str) -> Dict[str, Any]:
-        """Parse the input query."""
-        return {
-            "type": "question",
-            "content": query,
-            "complexity": self._assess_complexity(query),
-        }
-    
-    def _identify_knowledge(self, parsed: Dict) -> Dict[str, Any]:
-        """Identify relevant knowledge for reasoning."""
-        return {
-            "domain": "general",
-            "concepts": ["reasoning", "logic"],
-            "relations": [],
-        }
-    
-    def _apply_reasoning(self, knowledge: Dict) -> Dict[str, Any]:
-        """Apply logical reasoning to identified knowledge."""
-        return {
-            "conclusions": ["Reasoned conclusion based on analysis"],
-            "confidence": 0.8,
-            "method": "deductive",
-        }
-    
-    def _formulate_response(self, reasoned: Dict) -> str:
-        """Formulate final response from reasoning results."""
-        conclusions = reasoned.get("conclusions", [])
-        if conclusions:
-            return conclusions[0]
-        return "Analysis complete."
-    
-    def _assess_complexity(self, query: str) -> str:
-        """Assess query complexity."""
-        word_count = len(query.split())
-        if word_count < 5:
-            return "simple"
-        elif word_count < 15:
-            return "moderate"
-        else:
-            return "complex"
-    
-    def _add_step(self, operation: str, input_data: Any, 
-                  output_data: Any, confidence: float) -> None:
-        """Add a step to the current reasoning chain."""
-        step = ReasoningStep(
-            step_number=len(self._current_chain) + 1,
-            operation=operation,
-            input_data=input_data,
-            output_data=output_data,
-            confidence=confidence,
-        )
-        self._current_chain.append(step)
-        self.logger.debug(f"Reasoning step {step.step_number}: {operation}")
-    
+
     def get_reasoning_trace(self) -> List[ReasoningStep]:
-        """
-        Get the trace of the last reasoning chain.
-        
-        Returns:
-            List of reasoning steps
-        """
         return self._current_chain.copy()
-    
+
     def clear_history(self) -> None:
-        """Clear reasoning history."""
         self._reasoning_chains = []
         self._current_chain = []
         self.logger.debug("Reasoning history cleared")
-    
+
     def __repr__(self) -> str:
-        return f"ReasoningEngine(active={self._active}, depth={len(self._current_chain)})"
+        return (
+            f"ReasoningEngine(active={self._active}, "
+            f"depth={len(self._current_chain)})"
+        )
