@@ -69,7 +69,9 @@ class MindCore:
         self.short_term_memory = ShortTermMemory(
             limit=self.config.get("MEMORY_LIMIT", 10000)
         )
-        self.long_term_memory = LongTermMemory()
+        self.long_term_memory = LongTermMemory(
+            storage_path=self.config.get("PERSISTENCE_PATH")
+        )
         self.memory_retriever = LexicalMemoryRetriever(
             self.long_term_memory,
             limit=1,
